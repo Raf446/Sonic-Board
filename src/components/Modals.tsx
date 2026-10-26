@@ -112,12 +112,17 @@ export const SoundModal: React.FC<SoundModalProps> = ({
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    const objectUrl = URL.createObjectURL(file);
-    setFilePath(objectUrl);
     if (!name.trim()) {
       const baseName = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
       setName(baseName);
     }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string" && reader.result.startsWith("data:")) {
+        setFilePath(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

@@ -1,7 +1,10 @@
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use crate::audio::SoundItem;
+
+const CANONICAL_SAMPLE_RATE: u32 = 48_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,8 +40,8 @@ impl Default for PersistedConfig {
             soundboard_vol: 0.90,
             monitor_vol: 0.80,
             pitch: 0.0,
-            reverb: 0.15,
-            distortion: 0.05,
+            reverb: 0.0,
+            distortion: 0.0,
         }
     }
 }
@@ -175,10 +178,128 @@ fn config_file_path() -> PathBuf {
     dir.join("sonicboard-config.json")
 }
 
+pub fn sounds_storage_dir() -> PathBuf {
+    let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    let dir = base.join("SonicBoard").join("sounds");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+pub fn canonical_sound_wav_path(sound_id: &str) -> PathBuf {
+    let safe_id: String = sound_id
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    sounds_storage_dir().join(format!("{safe_id}.wav"))
+}
+
+// Write canonical 48 kHz mono 16-bit PCM WAV to disk so custom imported sounds survive restarts intact.
+pub fn persist_canonical_wav_48k_mono(
+    sound_id: &str,
+    samples_48k_mono: &[f32],
+) -> Result<PathBuf, String> {
+    let out_path = canonical_sound_wav_path(sound_id);
+    let num_samples = samples_48k_mono.len();
+    let data_bytes = (num_samples * 2) as u32;
+    let riff_size = 36u32.saturating_add(data_bytes);
+    let byte_rate = CANONICAL_SAMPLE_RATE * 2;
+
+    let mut buf = Vec::with_capacity(44 + num_samples * 2);
+    buf.extend_from_slice(b"RIFF");
+    buf.extend_from_slice(&riff_size.to_le_bytes());
+    buf.extend_from_slice(b"WAVE");
+    buf.extend_from_slice(b"fmt ");
+    buf.extend_from_slice(&16u32.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&1u16.to_le_bytes());
+    buf.extend_from_slice(&CANONICAL_SAMPLE_RATE.to_le_bytes());
+    buf.extend_from_slice(&byte_rate.to_le_bytes());
+    buf.extend_from_slice(&2u16.to_le_bytes());
+    buf.extend_from_slice(&16u16.to_le_bytes());
+    buf.extend_from_slice(b"data");
+    buf.extend_from_slice(&data_bytes.to_le_bytes());
+
+    for &sample in samples_48k_mono {
+        let clamped = sample.clamp(-1.0, 1.0);
+        let pcm_i16 = (clamped * i16::MAX as f32) as i16;
+        buf.extend_from_slice(&pcm_i16.to_le_bytes());
+    }
+
+    let mut file =
+        fs::File::create(&out_path).map_err(|e| format!("Failed to create canonical WAV: {e}"))?;
+    file.write_all(&buf)
+        .map_err(|e| format!("Failed to write canonical WAV: {e}"))?;
+    Ok(out_path)
+}
+
+pub fn decode_data_uri_bytes(data_uri: &str) -> Option<Vec<u8>> {
+    let trimmed = data_uri.trim();
+    if !trimmed.starts_with("data:") {
+        return None;
+    }
+    let (_, b64_part) = trimmed.split_once(";base64,")?;
+    decode_base64_standard(b64_part)
+}
+
+fn decode_base64_standard(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity((input.len() * 3) / 4);
+    let mut accum = 0u32;
+    let mut bits = 0u8;
+
+    for byte in input.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        if byte == b'=' {
+            break;
+        }
+        let val = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        accum = (accum << 6) | (val as u32);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(((accum >> bits) & 0xFF) as u8);
+        }
+    }
+    Some(out)
+}
+
+pub fn normalize_persisted_sound_path(sound_id: &str, raw_path: &str) -> String {
+    let trimmed = raw_path.trim();
+    if trimmed.starts_with("/samples/") {
+        return trimmed.to_string();
+    }
+    let canonical = canonical_sound_wav_path(sound_id);
+    if canonical.exists() {
+        return canonical.to_string_lossy().to_string();
+    }
+    if !trimmed.starts_with("blob:") && !trimmed.starts_with("data:") && Path::new(trimmed).exists()
+    {
+        return trimmed.to_string();
+    }
+    trimmed.to_string()
+}
+
 pub fn load_config() -> PersistedConfig {
     let path = config_file_path();
     if let Ok(raw) = fs::read_to_string(path) {
-        if let Ok(parsed) = serde_json::from_str::<PersistedConfig>(&raw) {
+        if let Ok(mut parsed) = serde_json::from_str::<PersistedConfig>(&raw) {
+            // Reset Voice FX to neutral bypass (0.0) on startup so uncalibrated DSP never corrupts playback.
+            parsed.pitch = 0.0;
+            parsed.reverb = 0.0;
+            parsed.distortion = 0.0;
+
+            for sound in parsed.sounds.iter_mut() {
+                sound.file_path = normalize_persisted_sound_path(&sound.id, &sound.file_path);
+            }
+
             if !parsed.sounds.is_empty() {
                 return parsed;
             }

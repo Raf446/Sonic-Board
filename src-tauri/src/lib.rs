@@ -22,7 +22,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Self {
-        let cfg = load_config();
+        let mut cfg = load_config();
         let initial_bindings: Vec<(String, String)> = cfg
             .sounds
             .iter()
@@ -30,8 +30,13 @@ impl AppState {
             .collect();
 
         let engine = AudioEngine::new(cfg.sounds.clone());
+        cfg.sounds = engine.get_sounds();
+        cfg.pitch = 0.0;
+        cfg.reverb = 0.0;
+        cfg.distortion = 0.0;
+
         let _ = engine.set_mixer_volumes(cfg.mic_vol, cfg.soundboard_vol, cfg.monitor_vol);
-        let _ = engine.set_voice_fx(cfg.pitch, cfg.reverb, cfg.distortion);
+        let _ = engine.set_voice_fx(0.0, 0.0, 0.0);
         if let (Some(mic), Some(virt), Some(mon)) = (
             cfg.mic_device_id.clone(),
             cfg.virtual_mic_id.clone(),
@@ -494,5 +499,116 @@ mod tests {
             .unregister_hotkey("snd-1")
             .expect("unregister should succeed");
         assert_eq!(registry.lookup_sound_by_combo("Ctrl + Num 4"), None);
+    }
+
+    #[test]
+    fn test_resampling_and_channel_conversion() {
+        let mono_44k: Vec<f32> = (0..441).map(|i| (i as f32 / 441.0).sin()).collect();
+        let resampled_48k = AudioEngine::resample_linear(&mono_44k, 44_100, 48_000);
+        assert_eq!(resampled_48k.len(), 480);
+
+        let stereo = AudioEngine::mono_to_interleaved_channels(&[0.25, -0.75], 2);
+        assert_eq!(stereo, vec![0.25, 0.25, -0.75, -0.75]);
+
+        let downmixed = AudioEngine::downmix_to_mono(&[0.5, -0.5, 0.8, 0.2], 2);
+        assert_eq!(downmixed.len(), 2);
+        assert!((downmixed[0] - 0.0).abs() < 1e-6);
+        assert!((downmixed[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_virtual_mic_never_resolves_to_monitor_speaker() {
+        use crate::audio::devices::{is_virtual_device_name, resolve_virtual_mic_output_device};
+
+        assert!(!is_virtual_device_name("FxSound Speakers (FxSound Audio Enhancer)"));
+        assert!(!is_virtual_device_name("Speakers (Realtek(R) Audio)"));
+        assert!(is_virtual_device_name("CABLE Input (VB-Audio Virtual Cable)"));
+
+        // Must reject when virtual_mic_id equals monitor_headphone_id or is a physical speaker.
+        assert!(resolve_virtual_mic_output_device(
+            "out::3::FxSound Speakers (FxSound Audio Enhancer)",
+            "out::3::FxSound Speakers (FxSound Audio Enhancer)"
+        )
+        .is_none());
+        assert!(resolve_virtual_mic_output_device(
+            "out::0::Speakers (Realtek(R) Audio)",
+            "out::3::FxSound Speakers (FxSound Audio Enhancer)"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_canonical_wav_persistence_and_neutral_dsp_startup() {
+        use crate::store::{
+            canonical_sound_wav_path, normalize_persisted_sound_path,
+            persist_canonical_wav_48k_mono, PersistedConfig,
+        };
+
+        let default_cfg = PersistedConfig::default();
+        assert_eq!(default_cfg.pitch, 0.0);
+        assert_eq!(default_cfg.reverb, 0.0);
+        assert_eq!(default_cfg.distortion, 0.0);
+
+        let engine = AudioEngine::new(default_starter_sounds());
+        let mixer = engine.get_mixer_state();
+        assert_eq!(mixer.voice_fx.pitch, 0.0);
+        assert_eq!(mixer.voice_fx.reverb, 0.0);
+        assert_eq!(mixer.voice_fx.distortion, 0.0);
+
+        let test_id = "snd-unit-test-canonical";
+        let samples: Vec<f32> = (0..4800).map(|i| (i as f32 * 0.02).sin() * 0.5).collect();
+        let saved_path =
+            persist_canonical_wav_48k_mono(test_id, &samples).expect("canonical WAV should save");
+        assert!(saved_path.exists());
+
+        let normalized_path =
+            normalize_persisted_sound_path(test_id, "blob:http://localhost:1420/expired");
+        assert_eq!(
+            normalized_path,
+            canonical_sound_wav_path(test_id)
+                .to_string_lossy()
+                .to_string()
+        );
+
+        let _ = std::fs::remove_file(saved_path);
+    }
+
+    #[test]
+    fn test_voice_fx_dynamic_update_and_playback_retention() {
+        let engine = AudioEngine::new(default_starter_sounds());
+        engine
+            .set_voice_fx(-5.0, 0.35, 0.20)
+            .expect("setting voice fx should succeed");
+
+        let fx = engine.get_mixer_state().voice_fx;
+        assert!((fx.pitch - (-5.0)).abs() < 1e-5);
+        assert!((fx.reverb - 0.35).abs() < 1e-5);
+        assert!((fx.distortion - 0.20).abs() < 1e-5);
+
+        let sounds = engine.get_sounds();
+        let target_id = sounds[0].id.clone();
+        engine
+            .play_sound(&target_id)
+            .expect("playing starter sound should succeed");
+
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        let active_after_80ms = engine.get_audio_levels().active_sound_ids;
+        assert!(
+            active_after_80ms.contains(&target_id),
+            "sound should remain active and not cut off prematurely"
+        );
+
+        engine
+            .stop_sound(&target_id)
+            .expect("explicit stop_sound should cancel playback");
+        assert!(!engine.get_audio_levels().active_sound_ids.contains(&target_id));
+
+        engine
+            .set_voice_fx(0.0, 0.0, 0.0)
+            .expect("resetting voice fx to bypass should succeed");
+        let reset_fx = engine.get_mixer_state().voice_fx;
+        assert_eq!(reset_fx.pitch, 0.0);
+        assert_eq!(reset_fx.reverb, 0.0);
+        assert_eq!(reset_fx.distortion, 0.0);
     }
 }

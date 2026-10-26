@@ -1,6 +1,6 @@
 [package]
 name = "sonicboard"
-version = "1.0.0"
+version = "2.1.0"
 description = "SonicBoard: Universal Low-Latency Desktop Soundboard & Virtual Audio Router"
 authors = ["SonicBoard Audio Systems"]
 edition = "2021"

@@ -83,7 +83,7 @@ export const App: React.FC = () => {
     micVol: 0.85,
     soundboardVol: 0.9,
     monitorVol: 0.8,
-    voiceFx: { pitch: 0, reverb: 0.15, distortion: 0.05 },
+    voiceFx: { pitch: 0, reverb: 0, distortion: 0 },
     panicMuted: false,
   });
   const [levels, setLevels] = useState<AudioLevelPayload>({
@@ -473,12 +473,17 @@ export const App: React.FC = () => {
     setIsDragOverDropzone(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      const objUrl = URL.createObjectURL(file);
       const cleanTitle = file.name.replace(/\.[^/.]+$/, "").replace(/[-_]/g, " ");
-      setEditingSound(null);
-      setDroppedFilePath(objUrl);
-      setDroppedFileName(cleanTitle);
-      setIsSoundModalOpen(true);
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string" && reader.result.startsWith("data:")) {
+          setEditingSound(null);
+          setDroppedFilePath(reader.result);
+          setDroppedFileName(cleanTitle);
+          setIsSoundModalOpen(true);
+        }
+      };
+      reader.readAsDataURL(file);
     }
   };
 

@@ -22,7 +22,7 @@ class WebAudioMonitorEngine {
 
   private soundboardVol = 0.9;
   private monitorVol = 0.8;
-  private voiceFx: VoiceFxState = { pitch: 0, reverb: 0.15, distortion: 0.05 };
+  private voiceFx: VoiceFxState = { pitch: 0, reverb: 0, distortion: 0 };
   private panicMuted = false;
 
   private ensureContext(): AudioContext | null {

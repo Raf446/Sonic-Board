@@ -99,7 +99,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
                   SonicBoard
                 </span>
                 <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-[#232734] dark:bg-[#232734] light:bg-slate-200 text-[#00F0FF] dark:text-[#00F0FF] light:text-sky-700 font-semibold">
-                  v2.0 DSP
+                  v2.1.0 DSP
                 </span>
               </div>
               <p className="text-[11px] text-[#9CA3AF] dark:text-[#9CA3AF] light:text-slate-600 leading-none mt-0.5">

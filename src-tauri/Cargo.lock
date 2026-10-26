@@ -3392,7 +3392,7 @@ dependencies = [
 
 [[package]]
 name = "sonicboard"
-version = "1.0.0"
+version = "2.1.0"
 dependencies = [
  "cpal",
  "dirs 5.0.1",

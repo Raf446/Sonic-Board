@@ -218,7 +218,7 @@ const browserFallbackState = {
     micVol: 0.85,
     soundboardVol: 0.9,
     monitorVol: 0.8,
-    voiceFx: { pitch: 0, reverb: 0.15, distortion: 0.05 },
+    voiceFx: { pitch: 0, reverb: 0, distortion: 0 },
     panicMuted: false,
   } as MixerState,
 };
@@ -372,13 +372,14 @@ export async function ipcRemoveSound(soundId: string): Promise<void> {
 }
 
 export async function ipcPlaySound(sound: SoundItem): Promise<void> {
-  await webAudioEngine.playSound(sound);
   browserFallbackState.mixer.panicMuted = false;
   browserFallbackState.routing.panicMuted = false;
   browserFallbackState.routing.connected = true;
   if (isTauriRuntime()) {
     await invoke("play_sound", { soundId: sound.id });
+    return;
   }
+  await webAudioEngine.playSound(sound);
 }
 
 export async function ipcStopSound(soundId: string): Promise<void> {

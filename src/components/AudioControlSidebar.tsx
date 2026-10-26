@@ -29,6 +29,34 @@ interface RotaryKnobProps {
   onChange: (newVal: number) => void;
 }
 
+function polarToCartesian(cx: number, cy: number, r: number, angleDeg: number) {
+  const rad = ((angleDeg - 90) * Math.PI) / 180;
+  return {
+    x: Number((cx + r * Math.cos(rad)).toFixed(3)),
+    y: Number((cy + r * Math.sin(rad)).toFixed(3)),
+  };
+}
+
+function describeKnobArc(
+  cx: number,
+  cy: number,
+  r: number,
+  startAngleDeg: number,
+  endAngleDeg: number
+): string {
+  const fromAngle = Math.max(-135, Math.min(135, Math.min(startAngleDeg, endAngleDeg)));
+  const toAngle = Math.max(-135, Math.min(135, Math.max(startAngleDeg, endAngleDeg)));
+  if (toAngle - fromAngle < 0.5) {
+    return "";
+  }
+  const startPt = polarToCartesian(cx, cy, r, fromAngle);
+  const endPt = polarToCartesian(cx, cy, r, toAngle);
+  const largeArcFlag = toAngle - fromAngle > 180 ? 1 : 0;
+  return `M ${startPt.x} ${startPt.y} A ${r} ${r} 0 ${largeArcFlag} 1 ${endPt.x} ${endPt.y}`;
+}
+
+const TRACK_ARC_PATH = describeKnobArc(24, 24, 20, -135, 135);
+
 const RotaryKnob: React.FC<RotaryKnobProps> = ({
   label,
   value,
@@ -42,8 +70,15 @@ const RotaryKnob: React.FC<RotaryKnobProps> = ({
   const dragStartY = useRef<number | null>(null);
   const dragStartVal = useRef<number>(value);
 
-  const normalized = Math.max(0, Math.min(1, (value - min) / (max - min)));
-  const angleDeg = -135 + normalized * 270;
+  const isBipolar = min < 0 && max > 0;
+  const clampedValue = Math.max(min, Math.min(max, value));
+  const normalized = Math.max(0, Math.min(1, (clampedValue - min) / (max - min)));
+  const angleDeg = isBipolar
+    ? (clampedValue / Math.max(Math.abs(min), Math.abs(max))) * 135
+    : -135 + normalized * 270;
+
+  const activeArcStartDeg = isBipolar ? 0 : -135;
+  const activeArcPath = describeKnobArc(24, 24, 20, activeArcStartDeg, angleDeg);
 
   const clampAndSnap = (raw: number) => {
     const clamped = Math.max(min, Math.min(max, raw));
@@ -108,28 +143,34 @@ const RotaryKnob: React.FC<RotaryKnobProps> = ({
         title="Tahan & geser vertikal, atau gunakan tombol panah Atas/Bawah"
         className="relative w-14 h-14 rounded-full bg-[#1A1D26] dark:bg-[#1A1D26] light:bg-white border-2 border-[#3B4259] hover:border-[#8B5CF6] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00F0FF] flex items-center justify-center cursor-ns-resize select-none transition"
       >
-        <svg className="w-full h-full -rotate-90 pointer-events-none" viewBox="0 0 48 48">
-          <circle
-            cx="24"
-            cy="24"
-            r="20"
+        <svg className="w-full h-full pointer-events-none" viewBox="0 0 48 48">
+          <path
+            d={TRACK_ARC_PATH}
             fill="none"
             stroke="#232734"
             strokeWidth="3.5"
-            strokeDasharray="94 126"
-            strokeDashoffset="-16"
-          />
-          <circle
-            cx="24"
-            cy="24"
-            r="20"
-            fill="none"
-            stroke="#8B5CF6"
-            strokeWidth="3.5"
             strokeLinecap="round"
-            strokeDasharray={`${Math.round(normalized * 94)} 126`}
-            strokeDashoffset="-16"
           />
+          {isBipolar && (
+            <line
+              x1="24"
+              y1="2.2"
+              x2="24"
+              y2="5.8"
+              stroke="#3B4259"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+            />
+          )}
+          {activeArcPath && (
+            <path
+              d={activeArcPath}
+              fill="none"
+              stroke="#8B5CF6"
+              strokeWidth="3.5"
+              strokeLinecap="round"
+            />
+          )}
         </svg>
         <span
           style={{ transform: `rotate(${angleDeg}deg)` }}

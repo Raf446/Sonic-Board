@@ -3,6 +3,10 @@ use super::{AudioDevicesResponse, DeviceInfo};
 
 pub fn is_virtual_device_name(name: &str) -> bool {
     let lower = name.to_lowercase();
+    // Exclude local desktop audio enhancers such as FxSound from being treated as virtual mic cables.
+    if lower.contains("fxsound") {
+        return false;
+    }
     lower.contains("vb-audio")
         || lower.contains("cable")
         || lower.contains("voicemeeter")
@@ -12,8 +16,106 @@ pub fn is_virtual_device_name(name: &str) -> bool {
         || lower.contains("loopback")
 }
 
+// Prefer WASAPI on Windows to avoid MME full-duplex and virtual sink failures.
+pub fn preferred_cpal_host() -> cpal::Host {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(host) = cpal::host_from_id(cpal::HostId::Wasapi) {
+            return host;
+        }
+    }
+    cpal::default_host()
+}
+
+pub fn resolve_input_device(device_id: &str) -> Option<cpal::Device> {
+    let host = preferred_cpal_host();
+    let target_name = device_id.split("::").nth(2).unwrap_or(device_id).trim();
+
+    if !target_name.is_empty() {
+        if let Ok(mut devices) = host.input_devices() {
+            if let Some(matched) = devices.find(|d| {
+                d.name()
+                    .map(|n| n == target_name || n == device_id || n.contains(target_name))
+                    .unwrap_or(false)
+            }) {
+                return Some(matched);
+            }
+        }
+    }
+    host.default_input_device()
+}
+
+// Resolve the physical monitor/headphone output device strictly for soundboard sample monitoring.
+pub fn resolve_monitor_output_device(monitor_device_id: &str) -> Option<cpal::Device> {
+    if monitor_device_id.starts_with("out::virtual::") {
+        return None;
+    }
+    let host = preferred_cpal_host();
+    let target_name = monitor_device_id
+        .split("::")
+        .nth(2)
+        .unwrap_or(monitor_device_id)
+        .trim();
+
+    if !target_name.is_empty() {
+        if let Ok(mut devices) = host.output_devices() {
+            if let Some(matched) = devices.find(|d| {
+                d.name()
+                    .map(|n| n == target_name || n == monitor_device_id || n.contains(target_name))
+                    .unwrap_or(false)
+            }) {
+                return Some(matched);
+            }
+        }
+    }
+    host.default_output_device()
+}
+
+// Resolve the virtual audio cable output device (e.g. VB-Cable), strictly rejecting monitor/speaker endpoints.
+pub fn resolve_virtual_mic_output_device(
+    virtual_mic_id: &str,
+    monitor_device_id: &str,
+) -> Option<cpal::Device> {
+    let trimmed_virt = virtual_mic_id.trim();
+    if trimmed_virt.is_empty() || trimmed_virt.starts_with("out::virtual::") {
+        return None;
+    }
+    if !monitor_device_id.trim().is_empty() && trimmed_virt == monitor_device_id.trim() {
+        return None;
+    }
+
+    let target_name = trimmed_virt.split("::").nth(2).unwrap_or(trimmed_virt).trim();
+    if target_name.is_empty() {
+        return None;
+    }
+
+    let monitor_target_name = monitor_device_id
+        .split("::")
+        .nth(2)
+        .unwrap_or(monitor_device_id)
+        .trim();
+
+    let host = preferred_cpal_host();
+    if let Ok(mut devices) = host.output_devices() {
+        if let Some(matched) = devices.find(|d| {
+            d.name()
+                .map(|n| {
+                    let matches_target =
+                        n == target_name || n == trimmed_virt || n.contains(target_name);
+                    let is_monitor_same =
+                        !monitor_target_name.is_empty() && n == monitor_target_name;
+                    matches_target && !is_monitor_same && is_virtual_device_name(&n)
+                })
+                .unwrap_or(false)
+        }) {
+            return Some(matched);
+        }
+    }
+    None
+}
+
 pub fn enumerate_audio_devices() -> AudioDevicesResponse {
-    let host = cpal::default_host();
+    let host = preferred_cpal_host();
     let host_name = format!("{:?}", host.id());
 
     let default_in_name = host
@@ -98,7 +200,7 @@ pub fn enumerate_audio_devices() -> AudioDevicesResponse {
         });
     }
 
-    // Always expose a virtual cable entry so users without VB-Cable installed can test routing with a fallback warning.
+    // Expose a simulated virtual cable option when no physical VB-Cable driver is present.
     let has_virtual_out = outputs.iter().any(|d| d.is_virtual);
     if !has_virtual_out {
         outputs.push(DeviceInfo {
